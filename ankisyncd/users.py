@@ -42,10 +42,11 @@ class SimpleUserManager:
 class SqliteUserManager(SimpleUserManager):
     """Authenticates users against a SQLite database."""
 
-    def __init__(self, auth_db_path, collection_path=None):
+    def __init__(self, auth_db_path, session_db_path, collection_path=None):
         SimpleUserManager.__init__(self, collection_path)
 
         self.auth_db_path = os.path.realpath(auth_db_path)
+        self.session_db_path = os.path.realpath(session_db_path)
         self._ensure_schema_up_to_date()
 
     def _ensure_schema_up_to_date(self):
@@ -66,11 +67,17 @@ class SqliteUserManager(SimpleUserManager):
     # DB API 2 driver variants
     def auth_db_exists(self):
         return os.path.isfile(self.auth_db_path)
+    
+    def session_db_exists(self):
+        return os.path.isfile(self.session_db_path)
 
     # Default to using sqlite3 but overridable for sub-classes using other
     # DB API 2 driver variants
     def _conn(self):
         return sqlite.connect(self.auth_db_path)
+    
+    def _conn_sess(self):
+        return sqlite.connect(self.session_db_path)
 
     # Default to using sqlite3 syntax but overridable for sub-classes using other
     # DB API 2 driver variants
@@ -106,6 +113,19 @@ class SqliteUserManager(SimpleUserManager):
         cursor.execute(self.fs("DELETE FROM auth WHERE username=?"), (username,))
         conn.commit()
         conn.close()
+
+        if not self.session_db_exists():
+            raise ValueError("Session DB {} doesn't exist".format(self.session_db_path))
+        
+        # now we wil delete the related sessions in `session.db`
+        conn = self._conn_sess()
+        cursor = conn.cursor()
+        logger.info("Removing user session '{}' from session db".format(username))
+        cursor.execute(self.fs("DELETE FROM session WHERE username=?"), (username,))
+        conn.commit()
+        conn.close()
+
+
 
     def add_user(self, username, password):
         self._add_user_to_auth_db(username, password)
@@ -199,7 +219,7 @@ class SqliteUserManager(SimpleUserManager):
 def get_user_manager(config):
     if "auth_db_path" in config and config["auth_db_path"]:
         logger.info("Found auth_db_path in config, using SqliteUserManager for auth")
-        return SqliteUserManager(config['auth_db_path'], config['data_root'])
+        return SqliteUserManager(config['auth_db_path'], config['session_db_path'], config['data_root'])
     elif "user_manager" in config and config["user_manager"]:  # load from config
         logger.info("Found user_manager in config, using {} for auth".format(config['user_manager']))
         import importlib
